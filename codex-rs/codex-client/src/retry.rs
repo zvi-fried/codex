@@ -25,10 +25,15 @@ impl RetryOn {
             return false;
         }
         match err {
-            TransportError::Http { status, .. } => {
-                (self.retry_429 && status.as_u16() == 429)
-                    || (self.retry_5xx && status.is_server_error())
-            }
+            TransportError::Http {
+                status, headers, ..
+            } => match should_retry_header(headers.as_ref()) {
+                Some(advised) => advised,
+                None => {
+                    (self.retry_429 && status.as_u16() == 429)
+                        || (self.retry_5xx && status.is_server_error())
+                }
+            },
             TransportError::Timeout
             | TransportError::Connection(_)
             | TransportError::Network(_) => self.retry_transport,
@@ -39,6 +44,19 @@ impl RetryOn {
         }
     }
 }
+
+/// The server's own word on retrying, as the OpenAI and Anthropic SDKs read it: `x-should-retry: true`
+/// retries whatever the status, `x-should-retry: false` never retries, anything else leaves the status rule to decide.
+pub fn should_retry_header(headers: Option<&http::HeaderMap>) -> Option<bool> {
+    let value = headers?.get(X_SHOULD_RETRY)?.to_str().ok()?;
+    match value.trim() {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
+pub const X_SHOULD_RETRY: &str = "x-should-retry";
 
 pub fn backoff(base: Duration, attempt: u64) -> Duration {
     if attempt == 0 {

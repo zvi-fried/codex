@@ -50,6 +50,27 @@ pub fn map_api_error(err: ApiError) -> CodexErr {
     }
 }
 
+/// A response the server said not to retry (`x-should-retry: false`), as the OpenAI SDKs
+/// honour it: final, and shown as it came. Checked after the provider's own error codes, so
+/// those keep their dedicated handling whatever the header says.
+fn retry_declined(
+    status: http::StatusCode,
+    body_text: String,
+    url: Option<String>,
+    headers: Option<&http::HeaderMap>,
+) -> CodexErr {
+    CodexErr::new(CodexErrorDetails::RetryDeclined(UnexpectedResponseError {
+        status,
+        user_message: api_error_user_message(status, &body_text),
+        body: body_text,
+        url,
+        cf_ray: extract_header(headers, CF_RAY_HEADER),
+        request_id: extract_request_id(headers),
+        identity_authorization_error: extract_header(headers, X_OPENAI_AUTHORIZATION_ERROR_HEADER),
+        identity_error_code: extract_x_error_json_code(headers),
+    }))
+}
+
 fn map_api_error_details(err: ApiError) -> CodexErr {
     match err {
         ApiError::ContextWindowExceeded => CodexErr::ContextWindowExceeded,
@@ -193,8 +214,6 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                     } else {
                         CodexErr::InvalidRequest(body_text)
                     }
-                } else if status == http::StatusCode::INTERNAL_SERVER_ERROR {
-                    CodexErr::InternalServerError
                 } else if status == http::StatusCode::TOO_MANY_REQUESTS {
                     if let Ok(err) = serde_json::from_str::<UsageErrorResponse>(&body_text) {
                         if err.error.error_type.as_deref() == Some("usage_limit_reached") {
@@ -246,10 +265,17 @@ fn map_api_error_details(err: ApiError) -> CodexErr {
                         }
                     }
 
+                    if codex_client::should_retry_header(headers.as_ref()) == Some(false) {
+                        return retry_declined(status, body_text, url, headers.as_ref());
+                    }
                     CodexErr::RetryLimit(RetryLimitReachedError {
                         status,
                         request_id: extract_request_tracking_id(headers.as_ref()),
                     })
+                } else if codex_client::should_retry_header(headers.as_ref()) == Some(false) {
+                    retry_declined(status, body_text, url, headers.as_ref())
+                } else if status == http::StatusCode::INTERNAL_SERVER_ERROR {
+                    CodexErr::InternalServerError
                 } else {
                     CodexErr::UnexpectedStatus(UnexpectedResponseError {
                         status,

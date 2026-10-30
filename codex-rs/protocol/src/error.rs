@@ -148,6 +148,9 @@ pub enum CodexErrorDetails {
     /// Unexpected HTTP status code.
     #[error("{0}")]
     UnexpectedStatus(UnexpectedResponseError),
+    /// An HTTP error the server said not to retry (`x-should-retry: false`): shown as it came, never retried.
+    #[error("{0}")]
+    RetryDeclined(UnexpectedResponseError),
     /// Invalid request.
     #[error("{0}")]
     InvalidRequest(String),
@@ -447,7 +450,8 @@ impl CodexErr {
             | CodexErrorDetails::FlexUnavailable
             | CodexErrorDetails::CyberPolicy { .. }
             | CodexErrorDetails::BioPolicy { .. }
-            | CodexErrorDetails::MisalignmentPolicyViolation { .. } => None,
+            | CodexErrorDetails::MisalignmentPolicyViolation { .. }
+            | CodexErrorDetails::RetryDeclined(_) => None,
             CodexErrorDetails::ServerOverloaded
             | CodexErrorDetails::PolicyCapacityUnavailable
             | CodexErrorDetails::RetryLimit(_) => self.server_retry_delay(),
@@ -520,11 +524,11 @@ impl CodexErr {
             CodexErrorDetails::RetryLimit(_) => CodexErrorInfo::ResponseTooManyFailedAttempts {
                 http_status_code: self.http_status_code_value(),
             },
-            CodexErrorDetails::ConnectionFailed(_) | CodexErrorDetails::UnexpectedStatus(_) => {
-                CodexErrorInfo::HttpConnectionFailed {
-                    http_status_code: self.http_status_code_value(),
-                }
-            }
+            CodexErrorDetails::ConnectionFailed(_)
+            | CodexErrorDetails::UnexpectedStatus(_)
+            | CodexErrorDetails::RetryDeclined(_) => CodexErrorInfo::HttpConnectionFailed {
+                http_status_code: self.http_status_code_value(),
+            },
             CodexErrorDetails::ResponseStreamFailed(_) => {
                 CodexErrorInfo::ResponseStreamConnectionFailed {
                     http_status_code: self.http_status_code_value(),
@@ -565,7 +569,9 @@ impl CodexErr {
             CodexErrorDetails::FlexUnavailable => Some(StatusCode::TOO_MANY_REQUESTS),
             CodexErrorDetails::ModelNotFound { status, .. } => *status,
             CodexErrorDetails::RetryLimit(err) => Some(err.status),
-            CodexErrorDetails::UnexpectedStatus(err) => Some(err.status),
+            CodexErrorDetails::UnexpectedStatus(err) | CodexErrorDetails::RetryDeclined(err) => {
+                Some(err.status)
+            }
             CodexErrorDetails::ConnectionFailed(err) => err.source.status(),
             CodexErrorDetails::ResponseStreamFailed(err) => err.source.status(),
             _ => None,
